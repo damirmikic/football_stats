@@ -347,8 +347,12 @@ def main():
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Total matches", f"{n_matches:,}")
     col2.metric("Leagues", n_leagues)
-    col3.metric("Date from", date_min.date() if pd.notna(date_min) else "N/A")
-    col4.metric("Date to", date_max.date() if pd.notna(date_max) else "N/A")
+
+    date_from_display = date_min.date().isoformat() if pd.notna(date_min) else "N/A"
+    date_to_display = date_max.date().isoformat() if pd.notna(date_max) else "N/A"
+
+    col3.metric("Date from", date_from_display)
+    col4.metric("Date to", date_to_display)
 
     st.markdown("---")
 
