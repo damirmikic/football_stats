@@ -16,13 +16,11 @@ EXCEL_URL = "https://www.football-data.co.uk/mmz4281/2526/all-euro-data-2025-202
 def add_xg_proxies(df: pd.DataFrame) -> pd.DataFrame:
     """
     Add simple xG proxies per match if shot stats exist.
-    Uses very crude weights:
-      xG ≈ 0.11 * SOT + 0.03 * (Shots - SOT) + 0.02 * Corners
+    xG ≈ 0.11 * SOT + 0.03 * (Shots - SOT) + 0.02 * Corners
     Columns used (football-data style): HS, HST, HC, AS, AST, AC
     """
     cols_shots = {"HS", "HST", "AS", "AST"}
     if not cols_shots.intersection(df.columns):
-        # No shot data at all
         return df
 
     df = df.copy()
@@ -34,7 +32,6 @@ def add_xg_proxies(df: pd.DataFrame) -> pd.DataFrame:
     for col in needed:
         df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
 
-    # crude proxy model
     df["xG_H"] = (
         0.11 * df["HST"] +
         0.03 * (df["HS"] - df["HST"]).clip(lower=0) +
@@ -49,7 +46,7 @@ def add_xg_proxies(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-@st.cache_data(ttl=6 * 60 * 60)  # cache for 6 hours
+@st.cache_data(ttl=6 * 60 * 60)
 def download_and_build_dataset(url: str) -> pd.DataFrame:
     resp = requests.get(url, timeout=60)
     resp.raise_for_status()
@@ -114,15 +111,6 @@ def download_and_build_dataset(url: str) -> pd.DataFrame:
 # =====================
 
 def compute_league_stats(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Per-league stats including:
-    - Avg goals, win/draw/lose %
-    - BTTS, Over 2.5/3.5/4.5
-    - 1st half Over 1.5, 1st half BTTS, goals in both halves
-    - xG averages (if available)
-    - League strength index combining AvgGoals, BTTS%, Over2.5%
-    """
-
     required_cols = {"League", "HomeTeam", "AwayTeam", "FTHG", "FTAG"}
     if not required_cols.issubset(df.columns):
         return pd.DataFrame()
@@ -174,7 +162,6 @@ def compute_league_stats(df: pd.DataFrame) -> pd.DataFrame:
         tmp["FH_BTTS"] = pd.NA
         tmp["GoalsBothHalves"] = pd.NA
 
-    # xG averages if we have them
     has_xg = {"xG_H", "xG_A"}.issubset(tmp.columns)
     if has_xg:
         tmp["xG_H"] = pd.to_numeric(tmp["xG_H"], errors="coerce").fillna(0)
@@ -221,15 +208,11 @@ def compute_league_stats(df: pd.DataFrame) -> pd.DataFrame:
     for col in pct_cols:
         grouped[col] = grouped[col] * 100
 
-    # League strength index (rough composite index)
-    # Based on AvgGoals, BTTS_Pct, Over2_5_Pct
-    # Scaled so average is roughly 100
     if len(grouped) > 0:
         avg_goals_mean = grouped["AvgGoals"].mean()
         btts_mean = grouped["BTTS_Pct"].mean()
         o25_mean = grouped["Over2_5_Pct"].mean()
 
-        # avoid division by zero
         avg_goals_mean = avg_goals_mean if avg_goals_mean > 0 else 1.0
         btts_mean = btts_mean if btts_mean > 0 else 1.0
         o25_mean = o25_mean if o25_mean > 0 else 1.0
@@ -241,6 +224,9 @@ def compute_league_stats(df: pd.DataFrame) -> pd.DataFrame:
         )
     else:
         grouped["LeagueStrengthIndex"] = pd.NA
+
+    # Round all numeric columns to 2 decimals
+    grouped = grouped.round(2)
 
     return grouped.reset_index()
 
@@ -266,7 +252,7 @@ def compute_team_table_for_league(df: pd.DataFrame, league: str) -> pd.DataFrame
                 return "A"
             else:
                 return "D"
-        sub["FTR"] = sub.apply(infer_result, axis=1)
+        sub["FTR"] = df.apply(infer_result, axis=1)
 
     sub["FTHG"] = pd.to_numeric(sub["FTHG"], errors="coerce")
     sub["FTAG"] = pd.to_numeric(sub["FTAG"], errors="coerce")
@@ -306,7 +292,7 @@ def compute_team_table_for_league(df: pd.DataFrame, league: str) -> pd.DataFrame
                 "GA": ga,
                 "GD": gd,
                 "Pts": pts,
-                "PPG": round(ppg, 3),
+                "PPG": round(ppg, 2),
             }
         )
 
@@ -381,7 +367,6 @@ def compute_team_stats(df: pd.DataFrame, league: str, team: str) -> dict:
     o35_pct = all_matches["O3_5"].mean() * 100
     o45_pct = all_matches["O4_5"].mean() * 100
 
-    # 1st half stats and goals in both halves (if we have HT columns)
     fh_over15_pct = None
     fh_btts_pct = None
     goals_both_halves_pct = None
@@ -405,7 +390,6 @@ def compute_team_stats(df: pd.DataFrame, league: str, team: str) -> dict:
             fh_btts_pct = ht_valid["FH_BTTS"].mean() * 100
             goals_both_halves_pct = ht_valid["GoalsBothHalves"].mean() * 100
 
-    # xG per team if we have proxies
     xg_for = None
     xg_against = None
     if {"xG_H", "xG_A"}.issubset(sub.columns):
@@ -421,12 +405,11 @@ def compute_team_stats(df: pd.DataFrame, league: str, team: str) -> dict:
         xg_for = xg_for_val / played if played > 0 else None
         xg_against = xg_against_val / played if played > 0 else None
 
-    # Attack/Defence ratings based on league averages
     league_valid = sub.dropna(subset=["FTHG", "FTAG"])
     if not league_valid.empty:
         league_avg_total_goals = (league_valid["FTHG"] + league_valid["FTAG"]).mean()
     else:
-        league_avg_total_goals = 2.5  # fallback
+        league_avg_total_goals = 2.5
 
     baseline_team_goals = league_avg_total_goals / 2 if league_avg_total_goals > 0 else 1.25
     gf_per_match = gf / played if played > 0 else 0
@@ -435,7 +418,6 @@ def compute_team_stats(df: pd.DataFrame, league: str, team: str) -> dict:
     attack_rating = gf_per_match / baseline_team_goals if baseline_team_goals > 0 else None
     defence_rating = ga_per_match / baseline_team_goals if baseline_team_goals > 0 else None
 
-    # Simple form (last 5)
     def result_symbol(row):
         if row["HomeTeam"] == team:
             if row["FTR"] == "H":
@@ -465,21 +447,21 @@ def compute_team_stats(df: pd.DataFrame, league: str, team: str) -> dict:
         "GA": ga,
         "GD": gd,
         "Points": pts,
-        "PPG": round(ppg, 3),
-        "AvgTotalGoals": round(avg_total_goals, 3),
+        "PPG": round(ppg, 2),
+        "AvgTotalGoals": round(avg_total_goals, 2),
         "FormLast5": form,
-        "BTTS_Pct": round(btts_pct, 1),
-        "FH_Over15_Pct": round(fh_over15_pct, 1) if fh_over15_pct is not None else None,
-        "FH_BTTS_Pct": round(fh_btts_pct, 1) if fh_btts_pct is not None else None,
-        "GoalsBothHalves_Pct": round(goals_both_halves_pct, 1) if goals_both_halves_pct is not None else None,
-        "Over2_5_Pct": round(o25_pct, 1),
-        "Over3_5_Pct": round(o35_pct, 1),
-        "Over4_5_Pct": round(o45_pct, 1),
-        "AttackRating": round(attack_rating, 3) if attack_rating is not None else None,
-        "DefenceRating": round(defence_rating, 3) if defence_rating is not None else None,
-        "xG_For": round(xg_for, 3) if xg_for is not None else None,
-        "xG_Against": round(xg_against, 3) if xg_against is not None else None,
-        "LeagueAvgTotalGoals": round(league_avg_total_goals, 3),
+        "BTTS_Pct": round(btts_pct, 2),
+        "FH_Over15_Pct": round(fh_over15_pct, 2) if fh_over15_pct is not None else None,
+        "FH_BTTS_Pct": round(fh_btts_pct, 2) if fh_btts_pct is not None else None,
+        "GoalsBothHalves_Pct": round(goals_both_halves_pct, 2) if goals_both_halves_pct is not None else None,
+        "Over2_5_Pct": round(o25_pct, 2),
+        "Over3_5_Pct": round(o35_pct, 2),
+        "Over4_5_Pct": round(o45_pct, 2),
+        "AttackRating": round(attack_rating, 2) if attack_rating is not None else None,
+        "DefenceRating": round(defence_rating, 2) if defence_rating is not None else None,
+        "xG_For": round(xg_for, 2) if xg_for is not None else None,
+        "xG_Against": round(xg_against, 2) if xg_against is not None else None,
+        "LeagueAvgTotalGoals": round(league_avg_total_goals, 2),
     }
 
 
@@ -492,19 +474,12 @@ def poisson_probs(lam: float, max_goals: int = 10):
 
 
 def poisson_match_model(df: pd.DataFrame, league: str, home_team: str, away_team: str):
-    """
-    Poisson-based match model using team attack/defence ratings and league average goals.
-    Returns:
-      - lambda_home, lambda_away
-      - probabilities for 1X2, BTTS, Over 2.5 / 3.5 / 4.5
-    """
     t_home = compute_team_stats(df, league, home_team)
     t_away = compute_team_stats(df, league, away_team)
 
     if not t_home or not t_away:
         return None
 
-    # Baseline from league
     league_avg_total_goals = t_home["LeagueAvgTotalGoals"]
     baseline_team_goals = league_avg_total_goals / 2 if league_avg_total_goals > 0 else 1.25
 
@@ -513,7 +488,6 @@ def poisson_match_model(df: pd.DataFrame, league: str, home_team: str, away_team
     att_a = t_away["AttackRating"] if t_away["AttackRating"] is not None else 1.0
     def_a = t_away["DefenceRating"] if t_away["DefenceRating"] is not None else 1.0
 
-    # avoid degenerate defence ratings
     def_h = max(def_h, 0.1)
     def_a = max(def_a, 0.1)
 
@@ -527,13 +501,8 @@ def poisson_match_model(df: pd.DataFrame, league: str, home_team: str, away_team
     pH_vec = poisson_probs(lambda_home, max_goals=max_goals)
     pA_vec = poisson_probs(lambda_away, max_goals=max_goals)
 
-    p_home = 0.0
-    p_draw = 0.0
-    p_away = 0.0
-    p_bt = 0.0
-    p_o25 = 0.0
-    p_o35 = 0.0
-    p_o45 = 0.0
+    p_home = p_draw = p_away = 0.0
+    p_bt = p_o25 = p_o35 = p_o45 = 0.0
 
     for i in range(max_goals + 1):
         for j in range(max_goals + 1):
@@ -557,11 +526,11 @@ def poisson_match_model(df: pd.DataFrame, league: str, home_team: str, away_team
                 p_bt += p
 
     def fair_odds(p):
-        return round(1 / p, 3) if p > 0 else None
+        return round(1 / p, 2) if p > 0 else None
 
     return {
-        "lambda_home": round(lambda_home, 3),
-        "lambda_away": round(lambda_away, 3),
+        "lambda_home": round(lambda_home, 2),
+        "lambda_away": round(lambda_away, 2),
         "P_H": p_home,
         "P_D": p_draw,
         "P_A": p_away,
@@ -686,47 +655,44 @@ def main():
         if not tstats:
             st.warning("No stats available for selected team.")
         else:
-            # basic team metrics
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("Played", tstats["Played"])
             c2.metric("Points", tstats["Points"])
-            c3.metric("PPG", tstats["PPG"])
+            c3.metric("PPG", f"{tstats['PPG']:.2f}")
             c4.metric("Goal diff", tstats["GD"])
 
             c5, c6, c7, c8 = st.columns(4)
             c5.metric("Wins", tstats["Wins"])
             c6.metric("Draws", tstats["Draws"])
             c7.metric("Losses", tstats["Losses"])
-            c8.metric("Avg total goals", tstats["AvgTotalGoals"])
+            c8.metric("Avg total goals", f"{tstats['AvgTotalGoals']:.2f}")
 
-            # attack/def + xG
             c9, c10, c11, c12 = st.columns(4)
-            att_display = f"{tstats['AttackRating']}" if tstats["AttackRating"] is not None else "N/A"
-            def_display = f"{tstats['DefenceRating']}" if tstats["DefenceRating"] is not None else "N/A"
-            xg_for_display = f"{tstats['xG_For']}" if tstats["xG_For"] is not None else "N/A"
-            xg_against_display = f"{tstats['xG_Against']}" if tstats["xG_Against"] is not None else "N/A"
+            att_display = f"{tstats['AttackRating']:.2f}" if tstats["AttackRating"] is not None else "N/A"
+            def_display = f"{tstats['DefenceRating']:.2f}" if tstats["DefenceRating"] is not None else "N/A"
+            xg_for_display = f"{tstats['xG_For']:.2f}" if tstats["xG_For"] is not None else "N/A"
+            xg_against_display = f"{tstats['xG_Against']:.2f}" if tstats["xG_Against"] is not None else "N/A"
 
             c9.metric("Attack rating", att_display)
             c10.metric("Defence rating", def_display)
             c11.metric("xG For / match", xg_for_display)
             c12.metric("xG Against / match", xg_against_display)
 
-            # BTTS and O/U realised stats
             c13, c14, c15, c16 = st.columns(4)
-            c13.metric("BTTS %", f"{tstats['BTTS_Pct']}%")
+            c13.metric("BTTS %", f"{tstats['BTTS_Pct']:.2f}%")
 
             fh_over15_display = (
-                f"{tstats['FH_Over15_Pct']}%"
+                f"{tstats['FH_Over15_Pct']:.2f}%"
                 if tstats["FH_Over15_Pct"] is not None
                 else "N/A"
             )
             fh_btts_display = (
-                f"{tstats['FH_BTTS_Pct']}%"
+                f"{tstats['FH_BTTS_Pct']:.2f}%"
                 if tstats["FH_BTTS_Pct"] is not None
                 else "N/A"
             )
             gbh_display = (
-                f"{tstats['GoalsBothHalves_Pct']}%"
+                f"{tstats['GoalsBothHalves_Pct']:.2f}%"
                 if tstats["GoalsBothHalves_Pct"] is not None
                 else "N/A"
             )
@@ -736,9 +702,9 @@ def main():
             c16.metric("Goals both halves %", gbh_display)
 
             c17, c18, c19 = st.columns(3)
-            c17.metric("Over 2.5 %", f"{tstats['Over2_5_Pct']}%")
-            c18.metric("Over 3.5 %", f"{tstats['Over3_5_Pct']}%")
-            c19.metric("Over 4.5 %", f"{tstats['Over4_5_Pct']}%")
+            c17.metric("Over 2.5 %", f"{tstats['Over2_5_Pct']:.2f}%")
+            c18.metric("Over 3.5 %", f"{tstats['Over3_5_Pct']:.2f}%")
+            c19.metric("Over 4.5 %", f"{tstats['Over4_5_Pct']:.2f}%")
 
             st.markdown(f"**Last 5 results:** {tstats['FormLast5']} (W/D/L sequence)")
 
@@ -793,7 +759,6 @@ def main():
 
         col_hp, col_ap = st.columns(2)
         home_team_p = col_hp.selectbox("Home team", teams_p, index=0)
-        # default away is first different team
         default_away_index = 0
         if len(teams_p) > 1:
             for i, t in enumerate(teams_p):
@@ -812,31 +777,35 @@ def main():
         else:
             st.markdown("##### Expected goals (λ)")
             c1, c2 = st.columns(2)
-            c1.metric(f"{home_team_p} λ", res["lambda_home"])
-            c2.metric(f"{away_team_p} λ", res["lambda_away"])
+            c1.metric(f"{home_team_p} λ", f"{res['lambda_home']:.2f}")
+            c2.metric(f"{away_team_p} λ", f"{res['lambda_away']:.2f}")
 
             st.markdown("##### 1X2 probabilities (Poisson)")
             c3, c4, c5 = st.columns(3)
-            c3.metric("Home win %", f"{res['P_H'] * 100:0.1f}%")
-            c4.metric("Draw %", f"{res['P_D'] * 100:0.1f}%")
-            c5.metric("Away win %", f"{res['P_A'] * 100:0.1f}%")
+            c3.metric("Home win %", f"{res['P_H'] * 100:.2f}%")
+            c4.metric("Draw %", f"{res['P_D'] * 100:.2f}%")
+            c5.metric("Away win %", f"{res['P_A'] * 100:.2f}%")
 
             c6, c7, c8 = st.columns(3)
-            c6.metric("Home odds (fair)", res["Odds_H"])
-            c7.metric("Draw odds (fair)", res["Odds_D"])
-            c8.metric("Away odds (fair)", res["Odds_A"])
+            c6.metric("Home odds (fair)", f"{res['Odds_H']:.2f}" if res["Odds_H"] is not None else "N/A")
+            c7.metric("Draw odds (fair)", f"{res['Odds_D']:.2f}" if res["Odds_D"] is not None else "N/A")
+            c8.metric("Away odds (fair)", f"{res['Odds_A']:.2f}" if res["Odds_A"] is not None else "N/A")
 
             st.markdown("##### BTTS and totals probabilities (Poisson model)")
             c9, c10, c11, c12 = st.columns(4)
-            c9.metric("BTTS %", f"{res['P_BTTS'] * 100:0.1f}%")
-            c10.metric("O2.5 %", f"{res['P_O2_5'] * 100:0.1f}%")
-            c11.metric("O3.5 %", f"{res['P_O3_5'] * 100:0.1f}%")
-            c12.metric("O4.5 %", f"{res['P_O4_5'] * 100:0.1f}%")
+            c9.metric("BTTS %", f"{res['P_BTTS'] * 100:.2f}%")
+            c10.metric("O2.5 %", f"{res['P_O2_5'] * 100:.2f}%")
+            c11.metric("O3.5 %", f"{res['P_O3_5'] * 100:.2f}%")
+            c12.metric("O4.5 %", f"{res['P_O4_5'] * 100:.2f}%")
 
             c13, c14, c15 = st.columns(3)
-            c13.metric("BTTS odds (fair)", res["Odds_BTTS"])
-            c14.metric("O2.5 odds (fair)", res["Odds_O2_5"])
-            c15.metric("O3.5 / O4.5 odds (fair)", f"O3.5: {res['Odds_O3_5']}, O4.5: {res['Odds_O4_5']}")
+            c13.metric("BTTS odds (fair)", f"{res['Odds_BTTS']:.2f}" if res["Odds_BTTS"] is not None else "N/A")
+            c14.metric("O2.5 odds (fair)", f"{res['Odds_O2_5']:.2f}" if res["Odds_O2_5"] is not None else "N/A")
+            c15.metric(
+                "O3.5 / O4.5 odds (fair)",
+                f"O3.5: {res['Odds_O3_5']:.2f if res['Odds_O3_5'] is not None else 'N/A'}, "
+                f"O4.5: {res['Odds_O4_5']:.2f if res['Odds_O4_5'] is not None else 'N/A'}",
+            )
 
             st.info(
                 "Model uses per-team attack/defence ratings and league average goals "
